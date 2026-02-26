@@ -700,7 +700,7 @@ function renderWeaponCenter(canvas) {
   canvas.appendChild(center);
 }
 
-async function renderSlotsAround(node, canvas, parentPos = { x: 0, y: 0 }, depth = 0) {
+async function renderSlotsAround(node, canvas, center = { x: 0, y: 0 }, depth = 1) {
 
   let slots;
 
@@ -712,56 +712,28 @@ async function renderSlotsAround(node, canvas, parentPos = { x: 0, y: 0 }, depth
     slotCache[node.item.id] = slots;
   }
 
-  // Track how many slots we already placed in each direction
-  const stacks = {
-    top: 0,
-    bottom: 0,
-    left: 0,
-    right: 0
-  };
+  if (!slots.length) return;
 
-  for (const slot of slots) {
+    const baseRadius = 110;     // distance from gun to first ring
+    const ringSpacing = 65;     // distance between each depth level
+
+    const radius = baseRadius + (depth - 1) * ringSpacing;
+    const angleStep = (2 * Math.PI) / slots.length;
+
+  slots.forEach((slot, index) => {
+
+    const angle = index * angleStep;
+
+    const x = center.x + Math.cos(angle) * radius;
+    const y = center.y + Math.sin(angle) * radius;
 
     const installed = node.children[slot.id];
-
-    const direction = getSlotDirection(slot.slot_name);
-
-    const radialOffset = 120 + depth * 70;
-    const spread = 65;
-
-    let x = parentPos.x;
-    let y = parentPos.y;
-
-    if (direction === "top") {
-      y -= radialOffset;
-      x += (stacks.top - 0.5) * spread;
-      stacks.top++;
-    }
-
-    if (direction === "bottom") {
-      y += radialOffset;
-      x += (stacks.bottom - 0.5) * spread;
-      stacks.bottom++;
-    }
-
-    if (direction === "left") {
-      x -= radialOffset;
-      y += (stacks.left - 0.5) * spread;
-      stacks.left++;
-    }
-
-    if (direction === "right") {
-      x += radialOffset;
-      y += (stacks.right - 0.5) * spread;
-      stacks.right++;
-    }
 
     const slotElement = document.createElement("div");
     slotElement.className = "canvas-slot";
 
-    // Anchor relative to canvas center
     slotElement.style.left = `calc(50% + ${x}px)`;
-    slotElement.style.top = `calc(50% + ${y}px)`;
+    slotElement.style.top  = `calc(50% + ${y}px)`;
 
     slotElement.innerHTML = installed
       ? `<img src="${installed.item.icon_link}" />`
@@ -772,9 +744,14 @@ async function renderSlotsAround(node, canvas, parentPos = { x: 0, y: 0 }, depth
     canvas.appendChild(slotElement);
 
     if (installed) {
-      await renderSlotsAround(installed, canvas, { x, y }, depth + 1);
+      renderSlotsAround(
+        installed,
+        canvas,
+        { x, y },
+        depth + 1
+      );
     }
-  }
+  });
 }
 
 function getSlotDirection(name) {
