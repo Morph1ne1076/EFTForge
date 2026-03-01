@@ -45,6 +45,16 @@ const CALIBER_DISPLAY_MAP = {
     "Caliber93x64": "9.3x64",
 };
 
+// ===============================
+// SPECIAL GUN ID CONSTANTS
+// ===============================
+
+const MXLR_ID = "67c6de3ce39861860909e8e5";
+
+const G36_IDS = new Set([
+    "623063e994fc3f7b302a9696"
+]);
+
 /* ===========================
    INITIAL LOAD
 =========================== */
@@ -1232,7 +1242,10 @@ function classifySlot(slot) {
     // -----------------------------
     // RIGHT SIDE
     // -----------------------------
-    if (nameId.startsWith("mod_stock"))
+    if (
+        nameId.startsWith("mod_stock") ||
+        nameId.startsWith("mod_hammer")
+    )
         return "right";
 
     // -----------------------------
@@ -1244,8 +1257,10 @@ function classifySlot(slot) {
         nameId.startsWith("mod_pistolgrip") ||
         nameId.startsWith("mod_launcher") ||
         nameId.startsWith("mod_bipod") ||
+        nameId.startsWith("mod_foregrip") ||
+        nameId.startsWith("mod_trigger") ||
         nameId === "mod_charge_001" ||
-        nameId === "mod_mount" // This is in bottom for the G36 magwell mount slot
+        (nameId === "mod_charge" && currentGun?.id === MXLR_ID)
     )
         return "bottom";
 
@@ -1254,7 +1269,8 @@ function classifySlot(slot) {
     // -----------------------------
     if (
         nameId.startsWith("mod_sight_rear") ||
-        nameId.startsWith("mod_scope")
+        nameId.startsWith("mod_scope") ||
+        nameId.startsWith("mod_tactical")
     )
         return "top";
 
@@ -1266,18 +1282,7 @@ function classifySlot(slot) {
         nameId.startsWith("mod_barrel") ||
         nameId.startsWith("mod_handguard") ||
         nameId.startsWith("mod_gas_block") ||
-        nameId.startsWith("mod_muzzle") ||
-        nameId.startsWith("mod_mount")
-    )
-        return "left";
-
-    // -----------------------------
-    // INTERNAL HANDGUN PARTS
-    // -----------------------------
-    if (
-        nameId.startsWith("mod_trigger") ||
-        nameId.startsWith("mod_hammer") ||
-        nameId.startsWith("mod_catch")
+        nameId.startsWith("mod_muzzle")
     )
         return "left";
 
@@ -1297,6 +1302,9 @@ function getStructuralRoleFromNameId(nameId) {
 
     if (nameId.startsWith("mod_handguard"))
         return "handguard";
+
+    if (nameId.startsWith("mod_catch"))
+        return "catch";
 
     if (nameId.startsWith("mod_barrel"))
         return "barrel";
@@ -1383,7 +1391,18 @@ async function renderGraphBaseSlots() {
 
     for (const slot of baseSlots) {
 
-        const direction = classifySlot(slot);
+        const nameId = slot.name_id || "";
+        let direction = classifySlot(slot);
+
+        // ---------------------------------
+        // G36 MAGWELL SPECIAL CASE
+        // ---------------------------------
+        if (
+            G36_IDS.has(currentGun?.id) &&
+            nameId.startsWith("mod_mount")
+        ) {
+            direction = "bottom";
+        }
 
         if (buckets[direction]) {
             buckets[direction].push(slot);
@@ -1397,6 +1416,7 @@ async function renderGraphBaseSlots() {
     const structuralOrder = [
         "receiver",
         "handguard",
+        "catch",
         "barrel",
         "gas_block",
         "muzzle"
@@ -1436,6 +1456,53 @@ async function renderGraphBaseSlots() {
         leftPositionMap[role] = left;
 
         currentIndex++;
+
+        // =====================================
+        // HANDGUN SPECIAL MOUNTS
+        // =====================================
+
+        if (currentGun?.weapon_category === "Handgun") {
+
+            // -------- TOP MOUNT (mod_mount_000) --------
+            const topMount = baseSlots.find(s =>
+                s.name_id === "mod_mount_000"
+            );
+
+            if (topMount) {
+
+                const node = createGraphNode(topMount);
+
+                // TOP MIDDLE of 3x1 border
+                const left = frameLeft + slotSize;
+                const top = frameTop - slotSize;
+
+                node.style.left = `${left}px`;
+                node.style.top = `${top}px`;
+
+                layer.appendChild(node);
+                renderedSlotIds.add(topMount.id);
+            }
+
+            // -------- TRIGGER GUARD MOUNT (mod_mount_001) --------
+            const triggerGuardMount = baseSlots.find(s =>
+                s.name_id === "mod_mount_001"
+            );
+
+            if (triggerGuardMount && leftPositionMap["receiver"] !== undefined) {
+
+                const node = createGraphNode(triggerGuardMount);
+
+                // Place directly under receiver
+                const left = leftPositionMap["receiver"];
+                const top = frameTop + slotSize;
+
+                node.style.left = `${left}px`;
+                node.style.top = `${top}px`;
+
+                layer.appendChild(node);
+                renderedSlotIds.add(triggerGuardMount.id);
+            }
+        }
     }
 
     // =====================================
@@ -1464,22 +1531,72 @@ async function renderGraphBaseSlots() {
     }
 
     // =====================================
-    // NORMAL CHARGING HANDLE (TOP OF STOCK)
+    // CHARGING HANDLE
     // =====================================
 
-    const chargingHandleSlot = baseSlots.find(s =>
-        s.name_id === "mod_charge"
+    const chargingHandleSlot = baseSlots.find(
+        s => s.name_id === "mod_charge"
     );
 
-    if (chargingHandleSlot && stockX !== null) {
+    if (chargingHandleSlot) {
 
-        const node = createGraphNode(chargingHandleSlot);
+        // Skip MXLR — it will be handled by bottomColumns stacking
+        if (currentGun?.id === MXLR_ID) {
+            // Do nothing here
+        }
+        else {
 
-        node.style.left = `${stockX}px`;
-        node.style.top = `${stockY - slotSize}px`;
+            const node = createGraphNode(chargingHandleSlot);
+
+            let chargeX;
+            let chargeY;
+
+            if (stockX !== null) {
+                chargeX = stockX;
+                chargeY = stockY - slotSize;
+            } else {
+                chargeX = frameLeft + borderWidth;
+                chargeY = frameTop - slotSize;
+            }
+
+            node.style.left = `${chargeX}px`;
+            node.style.top = `${chargeY}px`;
+
+            layer.appendChild(node);
+            renderedSlotIds.add(chargingHandleSlot.id);
+        }
+    }
+
+    // =====================================
+    // HAMMER SLOT (PISTOLS)
+    // =====================================
+
+    const hammerSlot = baseSlots.find(s =>
+        s.name_id?.startsWith("mod_hammer")
+    );
+
+    if (hammerSlot) {
+
+        const node = createGraphNode(hammerSlot);
+
+        let hammerX;
+        let hammerY;
+
+        if (stockX !== null) {
+            // If stock exists
+            hammerX = stockX;
+            hammerY = stockY - slotSize;
+        } else {
+            // Float to where stock WOULD be
+            hammerX = frameLeft + borderWidth;
+            hammerY = frameTop - slotSize;
+        }
+
+        node.style.left = `${hammerX}px`;
+        node.style.top = `${hammerY}px`;
 
         layer.appendChild(node);
-        renderedSlotIds.add(chargingHandleSlot.id);
+        renderedSlotIds.add(hammerSlot.id);
     }
 
     // =====================================
@@ -1549,13 +1666,41 @@ async function renderGraphBaseSlots() {
     }
 
     // =====================================
+    // SIDE RAIL (AK dovetail style)
+    // =====================================
+
+    const sideRailSlot = buckets.left.find(s =>
+        getStructuralRoleFromNameId(s.name_id) === "side_rail"
+    );
+
+    if (sideRailSlot) {
+
+        const node = createGraphNode(sideRailSlot);
+
+        // Place it middle of receiver (slotSize * 1 column of 3x1 border)
+        const left = frameLeft + slotSize; // center column
+        const top = frameTop - slotSize;   // above the frame
+
+        node.style.left = `${left}px`;
+        node.style.top = `${top}px`;
+
+        layer.appendChild(node);
+        renderedSlotIds.add(sideRailSlot.id);
+    }
+
+    // =====================================
     // RIGHT
     // =====================================
 
     buckets.right.forEach((slot, index) => {
 
-        // Skip stock (already rendered explicitly)
-        if (slot.name_id?.startsWith("mod_stock")) {
+        const nameId = slot.name_id || "";
+
+        // Skip slots already rendered explicitly
+        if (
+            nameId.startsWith("mod_stock") ||
+            nameId.startsWith("mod_hammer")
+        ) {
             return;
         }
 
@@ -1587,10 +1732,19 @@ async function renderGraphBaseSlots() {
         // ---------------------------------
         // LEFT COLUMN
         // ---------------------------------
+
         if (
-            nameId === "mod_charge_001" ||      // M4 bolt release
-            nameId === "mod_mount" ||           // G36 magwell mount
-            nameId.startsWith("mod_bipod")      // LMG bipods
+            nameId === "mod_charge_001" ||          // M4 bolt release
+            nameId === "mod_charge" ||              // Charging handle
+            nameId.startsWith("mod_bipod") ||       // Base bipod
+            nameId.startsWith("mod_foregrip") ||    // Base foregrip
+            nameId.startsWith("mod_trigger") ||     // Pistol trigger
+
+            // G36 magwell special case
+            (
+                G36_IDS.has(currentGun?.id) &&
+                nameId.startsWith("mod_mount")
+            )
         ) {
 
             bottomColumns.left.push(slot);
@@ -1695,6 +1849,9 @@ function createGraphNode(slot) {
     const node = document.createElement("div");
     node.className = "graph-slot";
 
+    // REQUIRED FOR DOM DEBUGGER
+    node.dataset.slotId = slot.id;
+
     node.textContent =
         slot.slot_name.split(" ")[0];
 
@@ -1705,72 +1862,284 @@ function createGraphNode(slot) {
     return node;
 }
 
-// Slot debugger
+/* ===========================
+   SLOT DEBUGGERS
+=========================== */
+
 const DEBUG_VERIFY_GRAPH = true;
 
+// Classification Debugger
 async function debugScanAllGuns() {
 
-    console.log("=== STARTING FULL name_id CLASSIFICATION SCAN ===");
-
-    const unmapped = new Set();
-    const allNameIds = new Set();
-    const directionBuckets = {
-        left: new Set(),
-        right: new Set(),
-        top: new Set(),
-        bottom: new Set()
-    };
+    console.log("=== STARTING FULL RENDER VERIFICATION SCAN ===");
 
     const res = await fetch(`${API_BASE}/guns`);
     const guns = await res.json();
+
+    const globalUnrendered = [];
 
     for (const gun of guns) {
 
         const slotRes = await fetch(`${API_BASE}/items/${gun.id}/slots`);
         const baseSlots = await slotRes.json();
 
+        const renderedSlotIds = new Set();
+
+        const buckets = {
+            left: [],
+            right: [],
+            top: [],
+            bottom: []
+        };
+
+        // ---------------------------------
+        // Bucket assignment (with G36 override)
+        // ---------------------------------
         for (const slot of baseSlots) {
 
-            const nameId = slot.name_id;
+            let direction = classifySlot(slot);
+            const nameId = slot.name_id || "";
 
-            if (!nameId) {
-                console.warn("Slot missing name_id:", slot);
-                continue;
+            if (
+                G36_IDS.has(currentGun?.id) &&
+                nameId.startsWith("mod_mount")
+            ) {
+                direction = "bottom";
             }
 
-            allNameIds.add(nameId);
-
-            const direction = classifySlot(slot);
-
-            if (!directionBuckets[direction]) {
-                unmapped.add(nameId);
-            } else {
-                directionBuckets[direction].add(nameId);
+            if (buckets[direction]) {
+                buckets[direction].push(slot);
             }
+        }
+
+        // ---------------------------------
+        // LEFT structural chain simulation
+        // ---------------------------------
+        const structuralOrder = [
+            "receiver",
+            "handguard",
+            "catch",
+            "barrel",
+            "gas_block",
+            "muzzle"
+        ];
+
+        for (const slot of buckets.left) {
+            const role = getStructuralRoleFromNameId(slot.name_id);
+            if (structuralOrder.includes(role)) {
+                renderedSlotIds.add(slot.id);
+            }
+        }
+
+        // ---------------------------------
+        // RIGHT (everything except stock handled separately)
+        // ---------------------------------
+        for (const slot of buckets.right) {
+            renderedSlotIds.add(slot.id);
+        }
+
+        // ---------------------------------
+        // BOTTOM
+        // ---------------------------------
+        for (const slot of buckets.bottom) {
+            renderedSlotIds.add(slot.id);
+        }
+
+        // ---------------------------------
+        // TOP
+        // ---------------------------------
+        for (const slot of buckets.top) {
+            renderedSlotIds.add(slot.id);
+        }
+
+        // ---------------------------------
+        // SPECIAL CASES THAT RENDER OUTSIDE BUCKETS
+        // ---------------------------------
+        for (const slot of baseSlots) {
+
+            const nameId = slot.name_id || "";
+
+            if (
+                nameId.startsWith("mod_stock") ||
+                nameId === "mod_charge" ||
+                nameId.startsWith("mod_launcher") ||
+                nameId.startsWith("mod_sight_front")
+            ) {
+                renderedSlotIds.add(slot.id);
+            }
+
+            if (getStructuralRoleFromNameId(nameId) === "side_rail") {
+                renderedSlotIds.add(slot.id);
+            }
+        }
+
+        // ---------------------------------
+        // Compare
+        // ---------------------------------
+        const unrendered = baseSlots.filter(
+            s => !renderedSlotIds.has(s.id)
+        );
+
+        if (unrendered.length > 0) {
+
+            console.group(`❌ ${gun.name}`);
+
+            unrendered.forEach(s => {
+                console.log(
+                    `Unrendered Slot: ${s.slot_name}`,
+                    `name_id: ${s.name_id}`
+                );
+            });
+
+            console.groupEnd();
+
+            globalUnrendered.push({
+                gun: gun.name,
+                slots: unrendered.map(s => ({
+                    slot_name: s.slot_name,
+                    name_id: s.name_id
+                }))
+            });
         }
     }
 
-    // -----------------------------
-    // REPORT
-    // -----------------------------
-
-    console.log("=== UNIQUE name_id VALUES ===");
-    console.table(Array.from(allNameIds).sort());
-
-    console.log("=== CLASSIFIED BY DIRECTION ===");
-
-    for (const dir in directionBuckets) {
-        console.log(`\n--- ${dir.toUpperCase()} ---`);
-        console.table(Array.from(directionBuckets[dir]).sort());
-    }
-
-    console.log("=== UNMAPPED name_id VALUES ===");
-
-    if (unmapped.size === 0) {
-        console.log("None. All slots classified.");
+    if (globalUnrendered.length === 0) {
+        console.log("All slots rendered for all guns.");
     } else {
-        console.table(Array.from(unmapped).sort());
+        console.warn("=== WARNING: UNRENDERED SLOTS FOUND ===");
+        console.table(globalUnrendered);
     }
 
     console.log("=== SCAN COMPLETE ===");
+}
+
+async function debugVerifyDOM() {
+
+    console.log("=== STARTING DOM RENDER VERIFICATION ===");
+
+    const res = await fetch(`${API_BASE}/guns`);
+    const guns = await res.json();
+
+    const globalIssues = [];
+
+    for (const gun of guns) {
+
+        console.log(`Checking: ${gun.name}`);
+
+        // Render the gun
+        await selectGun(gun, document.createElement("div"));
+        await new Promise(r => setTimeout(r, 60));
+
+        const slotRes = await fetch(`${API_BASE}/items/${gun.id}/slots`);
+        const baseSlots = await slotRes.json();
+
+        const domNodes = document.querySelectorAll('.graph-slot');
+        const domSlotIds = new Set(
+            Array.from(domNodes).map(n => String(n.dataset.slotId))
+        );
+
+        // -----------------------
+        // Recreate bucket logic
+        // -----------------------
+        const buckets = { left: [], right: [], top: [], bottom: [] };
+
+        for (const slot of baseSlots) {
+            let direction = classifySlot(slot);
+            const nameId = slot.name_id || "";
+
+            if (
+                G36_IDS.has(currentGun?.id) &&
+                nameId.startsWith("mod_mount")
+            ) {
+                direction = "bottom";
+            }
+
+            if (buckets[direction]) {
+                buckets[direction].push(slot);
+            }
+        }
+
+        const structuralOrder = [
+            "receiver",
+            "handguard",
+            "catch",
+            "barrel",
+            "gas_block",
+            "muzzle"
+        ];
+
+        const expectedRenderedSlots = new Set();
+
+        // LEFT structural only
+        for (const slot of buckets.left) {
+            const role = getStructuralRoleFromNameId(slot.name_id);
+            if (structuralOrder.includes(role)) {
+                expectedRenderedSlots.add(String(slot.id));
+            }
+        }
+
+        // RIGHT
+        for (const slot of buckets.right) {
+            expectedRenderedSlots.add(String(slot.id));
+        }
+
+        // TOP
+        for (const slot of buckets.top) {
+            expectedRenderedSlots.add(String(slot.id));
+        }
+
+        // BOTTOM
+        for (const slot of buckets.bottom) {
+            expectedRenderedSlots.add(String(slot.id));
+        }
+
+        // SPECIAL CASES
+        for (const slot of baseSlots) {
+            const nameId = slot.name_id || "";
+
+            if (
+                nameId.startsWith("mod_stock") ||
+                nameId === "mod_charge" ||
+                nameId.startsWith("mod_launcher") ||
+                nameId.startsWith("mod_sight_front")
+            ) {
+                expectedRenderedSlots.add(String(slot.id));
+            }
+        }
+
+        // -----------------------
+        // Compare
+        // -----------------------
+        const missing = [];
+
+        for (const id of expectedRenderedSlots) {
+            if (!domSlotIds.has(id)) {
+                const slot = baseSlots.find(s => String(s.id) === id);
+                missing.push({
+                    slot_name: slot?.slot_name,
+                    name_id: slot?.name_id
+                });
+            }
+        }
+
+        if (missing.length) {
+            console.group(`Issues in ${gun.name}`);
+            console.log("Missing:", missing);
+            console.groupEnd();
+
+            globalIssues.push({
+                gun: gun.name,
+                missing
+            });
+        }
+    }
+
+    if (globalIssues.length === 0) {
+        console.log("All guns verified. DOM render is consistent.");
+    } else {
+        console.warn("Render inconsistencies detected:");
+        console.table(globalIssues);
+    }
+
+    console.log("=== REAL DOM SCAN COMPLETE ===");
 }
