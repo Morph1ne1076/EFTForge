@@ -7,15 +7,16 @@ class Item(Base):
 
     id = Column(String, primary_key=True, index=True)
     name = Column(String)
+    short_name = Column(String, nullable=True)
     weight = Column(Float)
     ergonomics_modifier = Column(Float)
     recoil_modifier = Column(Float, default=0)
 
-    image_512_link = Column(String, nullable=True)
     icon_link = Column(String, nullable=True)
+    image_512_link = Column(String, nullable=True)
 
     weapon_category = Column(String)
-    structural_category = Column(String)  # NEW
+    structural_category = Column(String)
 
     is_weapon = Column(Boolean, default=False)
 

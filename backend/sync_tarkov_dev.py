@@ -12,9 +12,9 @@ QUERY = """
   items {
     id
     name
+    shortName
     weight
     ergonomicsModifier
-    gridImageLink
     image512pxLink
     iconLink
 
@@ -338,6 +338,7 @@ def sync_items():
         db_item = Item(
             id=item["id"],
             name=item["name"],
+            short_name=item.get("shortName"),
             weight=item_weight,
             ergonomics_modifier=item.get("ergonomicsModifier") or 0,
             recoil_modifier=recoilmodifier,

@@ -5,8 +5,8 @@ let currentGun = null;
 let buildTree = null;
 let slotCache = {};
 let allowedCache = {};
-let currentBuildData = null;
 let showHandguns = false;
+let graphResizeObserver = null;
 
 // === CALIBER NAMING ===
 
@@ -467,6 +467,18 @@ async function selectGun(gun, liElement) {
     updateStatsPanel(statsData);
     await renderFullTree();
     await renderGraphBaseSlots();
+
+    // Setup resize observer
+    const graphContainer = document.getElementById("graph-container");
+
+    if (!graphResizeObserver && graphContainer) {
+
+        graphResizeObserver = new ResizeObserver(() => {
+            renderGraphBaseSlots();
+        });
+
+        graphResizeObserver.observe(graphContainer);
+    }
 }
 
 async function loadAmmoForGun(gun) {
@@ -1065,21 +1077,37 @@ function renderAttachmentRows() {
   const tbody = document.getElementById("attachment-body");
   tbody.innerHTML = "";
 
+  let installedId = null;
+
+  if (lastSlot) {
+
+      const resolveInstalled = (node) => {
+
+          if (node.children[lastSlot.id]) {
+              return node.children[lastSlot.id].item.id;
+          }
+
+          for (const key in node.children) {
+              const result = resolveInstalled(node.children[key]);
+              if (result) return result;
+          }
+
+          return null;
+      };
+
+      installedId = resolveInstalled(buildTree);
+  }
+
   for (const entry of lastProcessedItems) {
 
     const { item, contribution, recoilPercent } = entry;
 
-    const installedId =
-        lastParentNode?.children?.[lastSlot.id]?.item?.id;
-
     const row = document.createElement("tr");
 
-    // Apply conflict styling (if any)
     if (entry.hasConflict) {
         row.classList.add("conflict-row");
     }
 
-    // Apply installed highlight
     if (
         installedId &&
         String(installedId) === String(item.id)
@@ -1126,8 +1154,48 @@ function renderAttachmentRows() {
 
         installAttachment(lastParentNode, lastSlot.id, item);
     });
+
     tbody.appendChild(row);
   }
+}
+
+function updateInstalledHighlight() {
+
+    if (!lastSlot) return;
+
+    const rows = document.querySelectorAll("#attachment-body tr");
+
+    // Resolve installed once
+    const resolveInstalled = (node) => {
+
+        if (node.children[lastSlot.id]) {
+            return node.children[lastSlot.id].item.id;
+        }
+
+        for (const key in node.children) {
+            const result = resolveInstalled(node.children[key]);
+            if (result) return result;
+        }
+
+        return null;
+    };
+
+    const installedId = resolveInstalled(buildTree);
+
+    rows.forEach((row, index) => {
+
+        const entry = lastProcessedItems[index];
+        if (!entry) return;
+
+        if (
+            installedId &&
+            String(entry.item.id) === String(installedId)
+        ) {
+            row.classList.add("attachment-row-installed");
+        } else {
+            row.classList.remove("attachment-row-installed");
+        }
+    });
 }
 
 /* ===========================
@@ -1135,31 +1203,37 @@ function renderAttachmentRows() {
 =========================== */
 
 function installAttachment(parentNode, slotId, item) {
+
     parentNode.children[slotId] = { item, children: {} };
+
     refreshBuildStats();
-    renderAttachmentRows();
     updateSingleSlotUI(parentNode, slotId);
+    renderGraphBaseSlots();
+
+    // Only update highlight if current slot is open
+    if (
+        lastParentNode === parentNode &&
+        lastSlot?.id === slotId
+    ) {
+        updateInstalledHighlight();
+    }
 }
 
 function removeAttachment(parentNode, slotId) {
 
     delete parentNode.children[slotId];
 
-    if (lastParentNode === parentNode && lastSlot?.id === slotId) {
-
-        lastParentNode = null;
-        lastSlot = null;
-
-        document.getElementById("attachment-table-container").innerHTML = "";
-
-        const placeholder = document.getElementById("attachment-placeholder");
-        if (placeholder) {
-            placeholder.style.display = "flex";
-        }
-    }
-
     refreshBuildStats();
+    renderGraphBaseSlots();
     updateSingleSlotUI(parentNode, slotId);
+
+    // Only update highlight if this slot is open
+    if (
+        lastParentNode === parentNode &&
+        lastSlot?.id === slotId
+    ) {
+        updateInstalledHighlight();
+    }
 }
 
 async function updateSingleSlotUI(parentNode, slotId) {
@@ -1738,7 +1812,7 @@ async function renderGraphBaseSlots() {
             nameId === "mod_charge" ||              // Charging handle
             nameId.startsWith("mod_bipod") ||       // Base bipod
             nameId.startsWith("mod_foregrip") ||    // Base foregrip
-            nameId.startsWith("mod_trigger") ||     // Pistol trigger
+            nameId.startsWith("mod_trigger") ||     // Trigger
 
             // G36 magwell special case
             (
@@ -1844,19 +1918,81 @@ async function renderGraphBaseSlots() {
     });
 }
 
+function removeAttachmentBySlotId(node, slotId) {
+
+    if (node.children[slotId]) {
+        delete node.children[slotId];
+        return true;
+    }
+
+    for (const key in node.children) {
+        const removed = removeAttachmentBySlotId(
+            node.children[key],
+            slotId
+        );
+        if (removed) return true;
+    }
+
+    return false;
+}
+
 function createGraphNode(slot) {
 
     const node = document.createElement("div");
     node.className = "graph-slot";
-
-    // REQUIRED FOR DOM DEBUGGER
     node.dataset.slotId = slot.id;
 
-    node.textContent =
-        slot.slot_name.split(" ")[0];
+    // Detect installed attachment
+    const installed = buildTree?.children?.[slot.id];
 
-    node.onclick = () => {
+    if (installed) {
+
+        const shortName =
+            installed.item.short_name ||
+            installed.item.name;
+
+        node.innerHTML = `
+            <div class="graph-slot-image-wrapper">
+                <img 
+                    src="${installed.item.icon_link || ''}"
+                    class="graph-slot-image"
+                    loading="lazy"
+                    decoding="async"
+                    onerror="this.style.display='none'"
+                />
+                <div class="graph-slot-label">
+                    ${shortName}
+                </div>
+            </div>
+        `;
+    } else {
+
+        node.textContent =
+            slot.slot_name.split(" ")[0];
+    }
+
+    // LEFT CLICK = open selector
+    node.onclick = (e) => {
+        if (e.button === 2) return;
         openSlotSelector(buildTree, slot);
+    };
+
+    // RIGHT CLICK = remove
+    node.oncontextmenu = (e) => {
+        e.preventDefault();
+
+        const installed = buildTree?.children?.[slot.id];
+        if (!installed) return;
+
+        removeAttachmentBySlotId(buildTree, slot.id);
+
+        refreshBuildStats();
+        renderGraphBaseSlots();
+
+        // If selector is open for this slot, rebuild it
+        if (lastSlot?.id === slot.id) {
+            updateInstalledHighlight();
+        }
     };
 
     return node;
@@ -2013,6 +2149,7 @@ async function debugScanAllGuns() {
     console.log("=== SCAN COMPLETE ===");
 }
 
+// Render Debugger
 async function debugVerifyDOM() {
 
     console.log("=== STARTING DOM RENDER VERIFICATION ===");
