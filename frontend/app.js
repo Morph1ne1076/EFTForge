@@ -471,7 +471,7 @@ async function selectGun(gun, liElement) {
 
     updateStatsPanel(statsData);
     await renderFullTree();
-    await renderGraphTree();
+    await renderGraphSlots();
 
     // Setup resize observer
     const graphContainer = document.getElementById("graph-container");
@@ -479,7 +479,7 @@ async function selectGun(gun, liElement) {
     if (!graphResizeObserver && graphContainer) {
 
         graphResizeObserver = new ResizeObserver(() => {
-            renderGraphBaseSlots();
+            renderGraphSlots();
         });
 
         graphResizeObserver.observe(graphContainer);
@@ -1206,15 +1206,30 @@ function updateInstalledHighlight() {
    TREE MANAGEMENT
 =========================== */
 
-function installAttachment(parentNode, slotId, item) {
+async function installAttachment(parentNode, slotId, item) {
 
-    parentNode.children[slotId] = { item, children: {} };
+    // attach item to build tree
+    parentNode.children[slotId] = {
+        item,
+        children: {}
+    };
 
-    refreshBuildStats();
-    updateSingleSlotUI(parentNode, slotId);
-    renderGraphBaseSlots();
+    // preload slots for this attachment
+    if (!slotCache[item.id]) {
 
-    // Only update highlight if current slot is open
+        const res = await fetch(`${API_BASE}/items/${item.id}/slots`);
+        const slots = await res.json();
+
+        slotCache[item.id] = slots;
+    }
+
+    // refresh stats
+    await refreshBuildStats();
+
+    // rerender graph
+    await renderGraphSlots();
+
+    // update attachment table highlight
     if (
         lastParentNode === parentNode &&
         lastSlot?.id === slotId
@@ -1228,7 +1243,7 @@ function removeAttachment(parentNode, slotId) {
     delete parentNode.children[slotId];
 
     refreshBuildStats();
-    renderGraphBaseSlots();
+    renderGraphSlots();
     updateSingleSlotUI(parentNode, slotId);
 
     // Only update highlight if this slot is open
@@ -1308,646 +1323,6 @@ function collectAttachmentIds(node) {
   return ids;
 }
 
-function classifySlot(slot) {
-
-    const nameId = slot.name_id;
-
-    if (!nameId) {
-        console.warn("Missing name_id:", slot);
-        return "left";
-    }
-
-    // -----------------------------
-    // RIGHT SIDE
-    // -----------------------------
-    if (
-        nameId.startsWith("mod_stock") ||
-        nameId.startsWith("mod_hammer")
-    )
-        return "right";
-
-    // -----------------------------
-    // BOTTOM
-    // -----------------------------
-    if (
-        nameId.startsWith("mod_magazine") ||
-        nameId.startsWith("mod_pistol_grip") ||
-        nameId.startsWith("mod_pistolgrip") ||
-        nameId.startsWith("mod_launcher") ||
-        nameId.startsWith("mod_bipod") ||
-        nameId.startsWith("mod_foregrip") ||
-        nameId.startsWith("mod_trigger") ||
-        nameId === "mod_charge_001" ||
-        (nameId === "mod_charge" && currentGun?.id === MXLR_ID)
-    )
-        return "bottom";
-
-    // -----------------------------
-    // TOP
-    // -----------------------------
-    if (
-        nameId.startsWith("mod_sight_rear") ||
-        nameId.startsWith("mod_scope") ||
-        nameId.startsWith("mod_tactical")
-    )
-        return "top";
-
-    // -----------------------------
-    // LEFT STRUCTURAL CHAIN
-    // -----------------------------
-    if (
-        nameId.startsWith("mod_reciever") || // BSG WHAT THE FUCK IS THIS???????
-        nameId.startsWith("mod_barrel") ||
-        nameId.startsWith("mod_handguard") ||
-        nameId.startsWith("mod_gas_block") ||
-        nameId.startsWith("mod_muzzle")
-    )
-        return "left";
-
-    return "left";
-}
-
-/* ===========================
-   GRAPH GEOMETRY ENGINE
-=========================== */
-
-function getStructuralRoleFromNameId(nameId) {
-
-    if (!nameId) return null;
-
-    if (nameId.startsWith("mod_reciever"))
-        return "receiver";
-
-    if (nameId.startsWith("mod_handguard"))
-        return "handguard";
-
-    if (nameId.startsWith("mod_catch"))
-        return "catch";
-
-    if (nameId.startsWith("mod_barrel"))
-        return "barrel";
-
-    if (nameId.startsWith("mod_gas_block"))
-        return "gas_block";
-
-    if (nameId.startsWith("mod_muzzle"))
-        return "muzzle";
-
-    if (nameId.startsWith("mod_mount"))
-        return "side_rail";
-
-    if (nameId.startsWith("mod_magazine"))
-        return "magazine";
-
-    if (
-        nameId.startsWith("mod_pistol_grip") ||
-        nameId.startsWith("mod_pistolgrip")
-    )
-        return "pistol_grip";
-
-    if (nameId.startsWith("mod_launcher"))
-        return "underbarrel";
-
-    if (nameId.startsWith("mod_bipod"))
-        return "lower_accessory";
-
-    if (nameId.startsWith("mod_sight_front"))
-        return "front_sight";
-
-    if (nameId.startsWith("mod_sight_rear"))
-        return "rear_sight";
-
-    if (nameId === "mod_charge")
-        return "charging_handle";
-
-    if (nameId === "mod_charge_001")
-        return "bolt_release";
-
-    if (nameId.startsWith("mod_scope"))
-        return "top_rail";
-
-    return null;
-}
-
-async function renderGraphBaseSlots() {
-
-    const layer = document.getElementById("graph-slots-layer");
-    const frame = document.querySelector(".gun-frame");
-
-    if (!layer || !frame || !currentGun || !buildTree) return;
-
-    layer.innerHTML = "";
-
-    const renderedSlotIds = new Set();
-
-    const res = await fetch(`${API_BASE}/items/${buildTree.item.id}/slots`);
-    const baseSlots = await res.json();
-
-    const rect = frame.getBoundingClientRect();
-
-    const slotSize = 56;
-
-    // 3x1 border dimensions
-    const borderWidth = slotSize * 3;
-    const borderHeight = slotSize;
-
-    const frameLeft = 0;
-    const frameTop  = 0;
-
-    // =====================================
-    // Bucket slots by direction
-    // =====================================
-
-    const buckets = {
-        left: [],
-        right: [],
-        top: [],
-        bottom: []
-    };
-
-    for (const slot of baseSlots) {
-
-        const nameId = slot.name_id || "";
-        let direction = classifySlot(slot);
-
-        // ---------------------------------
-        // G36 MAGWELL SPECIAL CASE
-        // ---------------------------------
-        if (
-            G36_IDS.has(currentGun?.id) &&
-            nameId.startsWith("mod_mount")
-        ) {
-            direction = "bottom";
-        }
-
-        if (buckets[direction]) {
-            buckets[direction].push(slot);
-        }
-    }
-
-    // =====================================
-    // LEFT STRUCTURAL QUEUE (STRICT ORDER)
-    // =====================================
-
-    const structuralOrder = [
-        "receiver",
-        "handguard",
-        "catch",
-        "barrel",
-        "gas_block",
-        "muzzle"
-    ];
-
-    // Map actual slots by structural role
-    const structuralSlots = {};
-
-    for (const slot of buckets.left) {
-        const role = getStructuralRoleFromNameId(slot.name_id);
-        if (role && structuralOrder.includes(role)) {
-            structuralSlots[role] = slot;
-        }
-    }
-
-    // Compute theoretical positions first
-    const leftPositionMap = {};
-    let currentIndex = 0;
-
-    for (const role of structuralOrder) {
-
-        const slot = structuralSlots[role];
-
-        if (!slot) continue; // compression happens here
-
-        const node = createGraphNode(slot);
-
-        const left =
-            frameLeft - slotSize * (currentIndex + 1);
-
-        node.style.left = `${left}px`;
-        node.style.top = `${frameTop}px`;
-
-        layer.appendChild(node);
-        renderedSlotIds.add(slot.id);
-
-        const installed = buildTree.children?.[slot.id];
-
-        if (installed) {
-            await renderAttachmentSlotsRecursive(installed, node);
-        }
-
-        leftPositionMap[role] = left;
-
-        currentIndex++;
-
-        // =====================================
-        // HANDGUN SPECIAL MOUNTS
-        // =====================================
-
-        if (currentGun?.weapon_category === "Handgun") {
-
-            // -------- TOP MOUNT (mod_mount_000) --------
-            const topMount = baseSlots.find(s =>
-                s.name_id === "mod_mount_000"
-            );
-
-            if (topMount) {
-
-                const node = createGraphNode(topMount);
-
-                // TOP MIDDLE of 3x1 border
-                const left = frameLeft + slotSize;
-                const top = frameTop - slotSize;
-
-                node.style.left = `${left}px`;
-                node.style.top = `${top}px`;
-
-                layer.appendChild(node);
-                renderedSlotIds.add(topMount.id);
-            }
-
-            // -------- TRIGGER GUARD MOUNT (mod_mount_001) --------
-            const triggerGuardMount = baseSlots.find(s =>
-                s.name_id === "mod_mount_001"
-            );
-
-            if (triggerGuardMount && leftPositionMap["receiver"] !== undefined) {
-
-                const node = createGraphNode(triggerGuardMount);
-
-                // Place directly under receiver
-                const left = leftPositionMap["receiver"];
-                const top = frameTop + slotSize;
-
-                node.style.left = `${left}px`;
-                node.style.top = `${top}px`;
-
-                layer.appendChild(node);
-                renderedSlotIds.add(triggerGuardMount.id);
-            }
-        }
-    }
-
-    // =====================================
-    // STOCK (RIGHT OF 3x1 BORDER)
-    // =====================================
-
-    let stockX = null;
-    let stockY = null;
-
-    const stockSlot = baseSlots.find(s =>
-        s.name_id?.startsWith("mod_stock")
-    );
-
-    if (stockSlot) {
-
-        const node = createGraphNode(stockSlot);
-
-        stockX = frameLeft + borderWidth;
-        stockY = frameTop;
-
-        node.style.left = `${stockX}px`;
-        node.style.top = `${stockY}px`;
-
-        layer.appendChild(node);
-        renderedSlotIds.add(stockSlot.id);
-
-        const installed = resolveInstalledNode(buildTree, stockSlot.id);
-
-        if (installed) {
-            await renderAttachmentSlotsRecursive(installed, node);
-        }
-    }
-
-    // =====================================
-    // CHARGING HANDLE
-    // =====================================
-
-    const chargingHandleSlot = baseSlots.find(
-        s => s.name_id === "mod_charge"
-    );
-
-    if (chargingHandleSlot) {
-
-        // Skip MXLR — it will be handled by bottomColumns stacking
-        if (currentGun?.id === MXLR_ID) {
-            // Do nothing here
-        }
-        else {
-
-            const node = createGraphNode(chargingHandleSlot);
-
-            let chargeX;
-            let chargeY;
-
-            if (stockX !== null) {
-                chargeX = stockX;
-                chargeY = stockY - slotSize;
-            } else {
-                chargeX = frameLeft + borderWidth;
-                chargeY = frameTop - slotSize;
-            }
-
-            node.style.left = `${chargeX}px`;
-            node.style.top = `${chargeY}px`;
-
-            layer.appendChild(node);
-            renderedSlotIds.add(chargingHandleSlot.id);
-        }
-    }
-
-    // =====================================
-    // HAMMER SLOT (PISTOLS)
-    // =====================================
-
-    const hammerSlot = baseSlots.find(s =>
-        s.name_id?.startsWith("mod_hammer")
-    );
-
-    if (hammerSlot) {
-
-        const node = createGraphNode(hammerSlot);
-
-        let hammerX;
-        let hammerY;
-
-        if (stockX !== null) {
-            // If stock exists
-            hammerX = stockX;
-            hammerY = stockY - slotSize;
-        } else {
-            // Float to where stock WOULD be
-            hammerX = frameLeft + borderWidth;
-            hammerY = frameTop - slotSize;
-        }
-
-        node.style.left = `${hammerX}px`;
-        node.style.top = `${hammerY}px`;
-
-        layer.appendChild(node);
-        renderedSlotIds.add(hammerSlot.id);
-    }
-
-    // =====================================
-    // UBGL (BOTTOM OF GAS BLOCK)
-    // =====================================
-
-    const ubglSlot = baseSlots.find(s =>
-        s.name_id?.startsWith("mod_launcher")
-    );
-
-    if (ubglSlot && leftPositionMap["gas_block"] !== undefined) {
-
-        const node = createGraphNode(ubglSlot);
-
-        node.style.left = `${leftPositionMap["gas_block"]}px`;
-        node.style.top = `${frameTop + slotSize}px`;
-
-        layer.appendChild(node);
-        renderedSlotIds.add(ubglSlot.id);
-    }
-
-    // =====================================
-    // FRONT SIGHT (TOP OF MUZZLE OR FLOAT)
-    // =====================================
-
-    const frontSightSlot = baseSlots.find(s =>
-        s.name_id?.startsWith("mod_sight_front")
-    );
-
-    if (frontSightSlot) {
-
-        let muzzleX;
-
-        if (leftPositionMap["muzzle"] !== undefined) {
-
-            // Normal case — muzzle exists
-            muzzleX = leftPositionMap["muzzle"];
-
-        } else {
-
-            // Floating case — compute compressed index
-            const compressedRoles = structuralOrder.filter(role =>
-                structuralSlots[role] !== undefined
-            );
-
-            const muzzleIndex =
-                compressedRoles.indexOf("muzzle");
-
-            // If muzzle not in compressed chain,
-            // treat it as the outermost position
-            const floatingIndex =
-                muzzleIndex === -1
-                    ? compressedRoles.length
-                    : muzzleIndex;
-
-            muzzleX =
-                frameLeft - slotSize * (floatingIndex + 1);
-        }
-
-        const node = createGraphNode(frontSightSlot);
-
-        node.style.left = `${muzzleX}px`;
-        node.style.top = `${frameTop - slotSize}px`;
-
-        layer.appendChild(node);
-        renderedSlotIds.add(frontSightSlot.id);
-    }
-
-    // =====================================
-    // SIDE RAIL (AK dovetail style)
-    // =====================================
-
-    const sideRailSlot = buckets.left.find(s =>
-        getStructuralRoleFromNameId(s.name_id) === "side_rail"
-    );
-
-    if (sideRailSlot) {
-
-        const node = createGraphNode(sideRailSlot);
-
-        // Place it middle of receiver (slotSize * 1 column of 3x1 border)
-        const left = frameLeft + slotSize; // center column
-        const top = frameTop - slotSize;   // above the frame
-
-        node.style.left = `${left}px`;
-        node.style.top = `${top}px`;
-
-        layer.appendChild(node);
-        renderedSlotIds.add(sideRailSlot.id);
-    }
-
-    // =====================================
-    // RIGHT
-    // =====================================
-
-    for (const [index, slot] of buckets.right.entries()) {
-
-        const nameId = slot.name_id || "";
-
-        // Skip slots already rendered explicitly
-        if (
-            nameId.startsWith("mod_stock") ||
-            nameId.startsWith("mod_hammer")
-        ) {
-            continue;
-        }
-
-        const node = createGraphNode(slot);
-
-        node.style.left = `${frameLeft + slotSize * 3}px`;
-        node.style.top  = `${frameTop + slotSize * index}px`;
-
-        layer.appendChild(node);
-        renderedSlotIds.add(slot.id);
-
-        const installed = node.children?.[slot.id];
-
-        if (installed) {
-            await renderAttachmentSlotsRecursive(installed, node);
-        }
-    }
-
-    // =====================================
-    // BOTTOM
-    // =====================================
-
-    const bottomColumns = {
-        left: [],
-        middle: [],
-        right: []
-    };
-
-    for (const slot of buckets.bottom) {
-
-        const nameId = slot.name_id || "";
-
-        // ---------------------------------
-        // LEFT COLUMN
-        // ---------------------------------
-
-        if (
-            nameId === "mod_charge_001" ||          // M4 bolt release
-            nameId === "mod_charge" ||              // Charging handle
-            nameId.startsWith("mod_bipod") ||       // Base bipod
-            nameId.startsWith("mod_foregrip") ||    // Base foregrip
-            nameId.startsWith("mod_trigger") ||     // Trigger
-
-            // G36 magwell special case
-            (
-                G36_IDS.has(currentGun?.id) &&
-                nameId.startsWith("mod_mount")
-            )
-        ) {
-
-            bottomColumns.left.push(slot);
-
-        }
-        // ---------------------------------
-        // MIDDLE COLUMN
-        // ---------------------------------
-        else if (nameId.startsWith("mod_magazine")) {
-
-            bottomColumns.middle.push(slot);
-
-        }
-        // ---------------------------------
-        // RIGHT COLUMN
-        // ---------------------------------
-        else if (
-            nameId.startsWith("mod_pistol_grip") ||
-            nameId.startsWith("mod_pistolgrip")
-        ) {
-
-            bottomColumns.right.push(slot);
-
-        }
-    }
-
-    const bottomOrder = ["left", "middle", "right"];
-
-    for (const [colIndex, col] of bottomOrder.entries()) {
-
-        for (const [rowIndex, slot] of bottomColumns[col].entries()) {
-
-            const node = createGraphNode(slot);
-
-            const left = frameLeft + slotSize * colIndex;
-            const top = frameTop + slotSize * (rowIndex + 1);
-
-            node.style.left = `${left}px`;
-            node.style.top = `${top}px`;
-
-            layer.appendChild(node);
-            renderedSlotIds.add(slot.id);
-
-            const installed = node.children?.[slot.id];
-
-            if (installed) {
-                await renderAttachmentSlotsRecursive(installed, node);
-            }
-        }
-    }
-
-    // =====================================
-    // TOP (STRICT 3-COLUMN RULE 6)
-    // =====================================
-
-    const topColumns = {
-        tactical: [],
-        scope: [],
-        rear_sight: []
-    };
-
-    // Bucket strictly by structural role
-    for (const slot of buckets.top) {
-
-        const role = getStructuralRoleFromNameId(slot.name_id);
-
-        if (role === "rear_sight") {
-            topColumns.rear_sight.push(slot);
-        }
-        else if (role === "top_rail") {
-            topColumns.scope.push(slot);
-        }
-        else {
-            // Everything else considered tactical
-            topColumns.tactical.push(slot);
-        }
-    }
-
-    // Fixed left → right order
-    const topOrder = [
-        "tactical",
-        "scope",
-        "rear_sight"
-    ];
-
-        for (const [colIndex, role] of topOrder.entries()) {
-
-        const slotsInColumn = topColumns[role];
-
-        for (const [rowIndex, slot] of slotsInColumn.entries()) {
-
-            const node = createGraphNode(slot);
-
-            const left = frameLeft + slotSize * colIndex;
-            const top = frameTop - slotSize * (rowIndex + 1);
-
-            node.style.left = `${left}px`;
-            node.style.top = `${top}px`;
-
-            layer.appendChild(node);
-            renderedSlotIds.add(slot.id);
-
-            const installed = node.children?.[slot.id];
-
-            if (installed) {
-                await renderAttachmentSlotsRecursive(installed, node);
-            }
-        }
-    }
-}
-
 function removeAttachmentBySlotId(node, slotId) {
 
     if (node.children[slotId]) {
@@ -1980,14 +1355,14 @@ function resolveInstalledNode(node, slotId) {
     return null;
 }
 
-function createGraphNode(slot) {
+function createGraphNode(parentNode, slot) {
 
     const node = document.createElement("div");
     node.className = "graph-slot";
     node.dataset.slotId = slot.id;
+    node.__parentNode = parentNode;
 
-    // Detect installed attachment
-    const installed = buildTree.children?.[slot.id];
+    const installed = parentNode.children?.[slot.id];
 
     if (installed) {
 
@@ -2009,47 +1384,74 @@ function createGraphNode(slot) {
                 </div>
             </div>
         `;
+
     } else {
 
         node.textContent =
             slot.slot_name.split(" ")[0];
     }
 
-    // LEFT CLICK = open selector
+    // LEFT CLICK
     node.onclick = (e) => {
+
         if (e.button === 2) return;
-        openSlotSelector(buildTree, slot);
+
+        const parent = node.__parentNode;
+
+        if (!parent) {
+            console.error("Slot missing parentNode:", slot);
+            return;
+        }
+
+        openSlotSelector(parent, slot);
     };
 
-    // RIGHT CLICK = remove
+    // RIGHT CLICK REMOVE
     node.oncontextmenu = (e) => {
+
         e.preventDefault();
 
-        const installed = buildTree.children?.[slot.id];
-        if (!installed) return;
+        const parent = node.__parentNode;
 
-        removeAttachmentBySlotId(buildTree, slot.id);
+        if (!parent?.children?.[slot.id]) return;
 
-        refreshBuildStats();
-        renderGraphBaseSlots();
-
-        if (lastSlot?.id === slot.id) {
-            updateInstalledHighlight();
-        }
+        removeAttachment(parent, slot.id);
     };
-
-    // -----------------------------
-    // CHILD SLOT RENDERING HOOK
-    // -----------------------------
-    node.dataset.hasInstalled = installed ? "1" : "0";
 
     return node;
 }
 
-async function renderAttachmentSlotsRecursive(node, parentGraphNode) {
+/* ===========================
+   GRAPH RENDERER
+=========================== */
+
+const SLOT_SIZE = 56;
+const COLUMN_GAP = 14;
+const ROW_GAP = 8;
+
+
+/* ---------------------------
+   ENTRY POINT
+----------------------------*/
+
+async function renderGraphSlots() {
 
     const layer = document.getElementById("graph-slots-layer");
-    const slotSize = 56;
+    if (!layer || !buildTree) return;
+
+    layer.innerHTML = "";
+
+    const layout = await buildGraphLayout(buildTree);
+
+    drawGraphLayout(layout, layer);
+}
+
+
+/* ---------------------------
+   BUILD LAYOUT TREE
+----------------------------*/
+
+async function buildGraphLayout(node) {
 
     let slots;
 
@@ -2061,61 +1463,69 @@ async function renderAttachmentSlotsRecursive(node, parentGraphNode) {
         slotCache[node.item.id] = slots;
     }
 
-    const parentLeft = parseFloat(parentGraphNode.style.left);
-    const parentTop  = parseFloat(parentGraphNode.style.top);
-
-    const directionCount = {
-        left: 0,
-        right: 0,
-        top: 0,
-        bottom: 0
+    const layoutNode = {
+        buildNode: node,   // <-- CRITICAL FIX
+        item: node.item,
+        slots: []
     };
 
     for (const slot of slots) {
 
-        const graphNode = createGraphNode(slot);
+        const installed = node.children?.[slot.id];
 
-        const direction = classifySlot(slot);
+        const slotEntry = {
+            slot,
+            installed,
+            child: null
+        };
 
-        let left = parentLeft;
-        let top  = parentTop;
-
-        if (direction === "bottom") {
-
-            directionCount.bottom++;
-            top = parentTop + slotSize * directionCount.bottom;
-
-        }
-        else if (direction === "top") {
-
-            directionCount.top++;
-            top = parentTop - slotSize * directionCount.top;
-
-        }
-        else if (direction === "left") {
-
-            directionCount.left++;
-            left = parentLeft - slotSize * directionCount.left;
-
-        }
-        else if (direction === "right") {
-
-            directionCount.right++;
-            left = parentLeft + slotSize * directionCount.right;
-
+        if (installed) {
+            slotEntry.child = await buildGraphLayout(installed);
         }
 
-        graphNode.style.left = `${left}px`;
-        graphNode.style.top  = `${top}px`;
+        layoutNode.slots.push(slotEntry);
+    }
 
-        layer.appendChild(graphNode);
+    return layoutNode;
+}
 
-        const installedChild = node.children?.[slot.id];
 
-        if (installedChild) {
-            await renderAttachmentSlotsRecursive(installedChild, graphNode);
+/* ---------------------------
+   DRAW GRAPH
+----------------------------*/
+
+function drawGraphLayout(layout, layer) {
+
+    let row = 0;
+
+    function drawNode(node, depth) {
+
+        for (const entry of node.slots) {
+
+            const slot = entry.slot;
+
+            const graphNode = createGraphNode(node.buildNode, slot);
+
+            const x =
+                depth * (SLOT_SIZE + COLUMN_GAP);
+
+            const y =
+                row * (SLOT_SIZE + ROW_GAP);
+
+            graphNode.style.left = `${x}px`;
+            graphNode.style.top  = `${y}px`;
+
+            layer.appendChild(graphNode);
+
+            row++;
+
+            if (entry.child) {
+                drawNode(entry.child, depth + 1);
+            }
         }
     }
+
+    drawNode(layout, 0);
 }
 
 /* ===========================
@@ -2456,84 +1866,4 @@ async function debugUnrenderedSlots() {
     }
 
     console.log("=== FULL GRAPH SLOT DEBUG END ===");
-}
-
-//
-// TESTING
-//
-async function renderGraphTree() {
-
-    const layer = document.getElementById("graph-slots-layer");
-    if (!layer || !buildTree) return;
-
-    layer.innerHTML = "";
-
-    const originX = 0;
-    const originY = 0;
-
-    await renderGraphNode(buildTree, originX, originY);
-}
-
-async function renderGraphNode(node, x, y) {
-
-    const layer = document.getElementById("graph-slots-layer");
-    const slotSize = 56;
-
-    let slots;
-
-    if (slotCache[node.item.id]) {
-        slots = slotCache[node.item.id];
-    } else {
-        const res = await fetch(`${API_BASE}/items/${node.item.id}/slots`);
-        slots = await res.json();
-        slotCache[node.item.id] = slots;
-    }
-
-    const offsets = {
-        top: 0,
-        bottom: 0,
-        left: 0,
-        right: 0
-    };
-
-    for (const slot of slots) {
-
-        const direction = classifySlot(slot);
-
-        let sx = x;
-        let sy = y;
-
-        if (direction === "top") {
-            offsets.top++;
-            sy -= slotSize * offsets.top;
-        }
-
-        if (direction === "bottom") {
-            offsets.bottom++;
-            sy += slotSize * offsets.bottom;
-        }
-
-        if (direction === "left") {
-            offsets.left++;
-            sx -= slotSize * offsets.left;
-        }
-
-        if (direction === "right") {
-            offsets.right++;
-            sx += slotSize * offsets.right;
-        }
-
-        const graphNode = createGraphNode(slot);
-
-        graphNode.style.left = `${sx}px`;
-        graphNode.style.top = `${sy}px`;
-
-        layer.appendChild(graphNode);
-
-        const installed = node.children?.[slot.id];
-
-        if (installed) {
-            await renderGraphNode(installed, sx, sy);
-        }
-    }
 }
