@@ -955,6 +955,18 @@ document.getElementById("attachment-placeholder").style.display = "none";
   applyAttachmentSort();
 }
 
+function closeSlotSelector() {
+
+    const container = document.getElementById("attachment-table-container");
+    const placeholder = document.getElementById("attachment-placeholder");
+
+    container.innerHTML = "";
+    placeholder.style.display = "flex";
+
+    lastParentNode = null;
+    lastSlot = null;
+}
+
 /* ===========================
    ATTACHMENT TABLE SEARCH
 =========================== */
@@ -1240,13 +1252,18 @@ async function installAttachment(parentNode, slotId, item) {
 
 function removeAttachment(parentNode, slotId) {
 
+    const removedNode = parentNode.children[slotId];
+
     delete parentNode.children[slotId];
+
+    if (removedNode && lastParentNode === removedNode) {
+        closeSlotSelector();
+    }
 
     refreshBuildStats();
     renderGraphSlots();
     updateSingleSlotUI(parentNode, slotId);
 
-    // Only update highlight if this slot is open
     if (
         lastParentNode === parentNode &&
         lastSlot?.id === slotId
@@ -1529,160 +1546,14 @@ function drawGraphLayout(layout, layer) {
 }
 
 /* ===========================
-   SLOT DEBUGGERS
+   MEGA HARD Slot Debugger
 =========================== */
 
-const DEBUG_VERIFY_GRAPH = true;
-
-// Classification Debugger
 async function debugScanAllGuns() {
 
-    console.log("=== STARTING FULL RENDER VERIFICATION SCAN ===");
-
-    const res = await fetch(`${API_BASE}/guns`);
-    const guns = await res.json();
-
-    const globalUnrendered = [];
-
-    for (const gun of guns) {
-
-        const slotRes = await fetch(`${API_BASE}/items/${gun.id}/slots`);
-        const baseSlots = await slotRes.json();
-
-        const renderedSlotIds = new Set();
-
-        const buckets = {
-            left: [],
-            right: [],
-            top: [],
-            bottom: []
-        };
-
-        // ---------------------------------
-        // Bucket assignment (with G36 override)
-        // ---------------------------------
-        for (const slot of baseSlots) {
-
-            let direction = classifySlot(slot);
-            const nameId = slot.name_id || "";
-
-            if (
-                G36_IDS.has(currentGun?.id) &&
-                nameId.startsWith("mod_mount")
-            ) {
-                direction = "bottom";
-            }
-
-            if (buckets[direction]) {
-                buckets[direction].push(slot);
-            }
-        }
-
-        // ---------------------------------
-        // LEFT structural chain simulation
-        // ---------------------------------
-        const structuralOrder = [
-            "receiver",
-            "handguard",
-            "catch",
-            "barrel",
-            "gas_block",
-            "muzzle"
-        ];
-
-        for (const slot of buckets.left) {
-            const role = getStructuralRoleFromNameId(slot.name_id);
-            if (structuralOrder.includes(role)) {
-                renderedSlotIds.add(slot.id);
-            }
-        }
-
-        // ---------------------------------
-        // RIGHT (everything except stock handled separately)
-        // ---------------------------------
-        for (const slot of buckets.right) {
-            renderedSlotIds.add(slot.id);
-        }
-
-        // ---------------------------------
-        // BOTTOM
-        // ---------------------------------
-        for (const slot of buckets.bottom) {
-            renderedSlotIds.add(slot.id);
-        }
-
-        // ---------------------------------
-        // TOP
-        // ---------------------------------
-        for (const slot of buckets.top) {
-            renderedSlotIds.add(slot.id);
-        }
-
-        // ---------------------------------
-        // SPECIAL CASES THAT RENDER OUTSIDE BUCKETS
-        // ---------------------------------
-        for (const slot of baseSlots) {
-
-            const nameId = slot.name_id || "";
-
-            if (
-                nameId.startsWith("mod_stock") ||
-                nameId === "mod_charge" ||
-                nameId.startsWith("mod_launcher") ||
-                nameId.startsWith("mod_sight_front")
-            ) {
-                renderedSlotIds.add(slot.id);
-            }
-
-            if (getStructuralRoleFromNameId(nameId) === "side_rail") {
-                renderedSlotIds.add(slot.id);
-            }
-        }
-
-        // ---------------------------------
-        // Compare
-        // ---------------------------------
-        const unrendered = baseSlots.filter(
-            s => !renderedSlotIds.has(s.id)
-        );
-
-        if (unrendered.length > 0) {
-
-            console.group(`WARNING: ${gun.name}`);
-
-            unrendered.forEach(s => {
-                console.log(
-                    `Unrendered Slot: ${s.slot_name}`,
-                    `name_id: ${s.name_id}`
-                );
-            });
-
-            console.groupEnd();
-
-            globalUnrendered.push({
-                gun: gun.name,
-                slots: unrendered.map(s => ({
-                    slot_name: s.slot_name,
-                    name_id: s.name_id
-                }))
-            });
-        }
-    }
-
-    if (globalUnrendered.length === 0) {
-        console.log("All slots rendered for all guns.");
-    } else {
-        console.warn("=== WARNING: UNRENDERED SLOTS FOUND ===");
-        console.table(globalUnrendered);
-    }
-
-    console.log("=== SCAN COMPLETE ===");
-}
-
-// Render Debugger
-async function debugVerifyDOM() {
-
-    console.log("=== STARTING DOM RENDER VERIFICATION ===");
+    console.log("=================================");
+    console.log("GRAPH DEBUGGER INITIALIZING");
+    console.log("=================================");
 
     const res = await fetch(`${API_BASE}/guns`);
     const guns = await res.json();
@@ -1691,179 +1562,125 @@ async function debugVerifyDOM() {
 
     for (const gun of guns) {
 
-        console.log(`Checking: ${gun.name}`);
+        console.log("Scanning:", gun.name);
 
-        // Render the gun
         await selectGun(gun, document.createElement("div"));
-        await new Promise(r => setTimeout(r, 60));
 
-        const slotRes = await fetch(`${API_BASE}/items/${gun.id}/slots`);
-        const baseSlots = await slotRes.json();
+        await new Promise(r => setTimeout(r, 80));
 
-        const domNodes = document.querySelectorAll('.graph-slot');
-        const domSlotIds = new Set(
-            Array.from(domNodes).map(n => String(n.dataset.slotId))
-        );
+        const expectedSlots = new Set();
+        const slotNameLookup = new Map();
 
-        // -----------------------
-        // Recreate bucket logic
-        // -----------------------
-        const buckets = { left: [], right: [], top: [], bottom: [] };
+        async function scanBuild(node) {
 
-        for (const slot of baseSlots) {
-            let direction = classifySlot(slot);
-            const nameId = slot.name_id || "";
+            let slots;
 
-            if (
-                G36_IDS.has(currentGun?.id) &&
-                nameId.startsWith("mod_mount")
-            ) {
-                direction = "bottom";
+            if (slotCache[node.item.id]) {
+                slots = slotCache[node.item.id];
+            } else {
+                const res = await fetch(`${API_BASE}/items/${node.item.id}/slots`);
+                slots = await res.json();
+                slotCache[node.item.id] = slots;
             }
 
-            if (buckets[direction]) {
-                buckets[direction].push(slot);
-            }
-        }
+            for (const slot of slots) {
 
-        const structuralOrder = [
-            "receiver",
-            "handguard",
-            "catch",
-            "barrel",
-            "gas_block",
-            "muzzle"
-        ];
+                const slotId = String(slot.id);
 
-        const expectedRenderedSlots = new Set();
+                expectedSlots.add(slotId);
+                slotNameLookup.set(slotId, slot.name_id || slot.name || slotId);
 
-        // LEFT structural only
-        for (const slot of buckets.left) {
-            const role = getStructuralRoleFromNameId(slot.name_id);
-            if (structuralOrder.includes(role)) {
-                expectedRenderedSlots.add(String(slot.id));
+                const installed = node.children?.[slot.id];
+
+                if (installed) {
+                    await scanBuild(installed);
+                }
             }
         }
 
-        // RIGHT
-        for (const slot of buckets.right) {
-            expectedRenderedSlots.add(String(slot.id));
-        }
+        await scanBuild(buildTree);
 
-        // TOP
-        for (const slot of buckets.top) {
-            expectedRenderedSlots.add(String(slot.id));
-        }
+        const domNodes = document.querySelectorAll(".graph-slot");
 
-        // BOTTOM
-        for (const slot of buckets.bottom) {
-            expectedRenderedSlots.add(String(slot.id));
-        }
+        const domSlots = new Map();
 
-        // SPECIAL CASES
-        for (const slot of baseSlots) {
-            const nameId = slot.name_id || "";
+        domNodes.forEach(node => {
 
-            if (
-                nameId.startsWith("mod_stock") ||
-                nameId === "mod_charge" ||
-                nameId.startsWith("mod_launcher") ||
-                nameId.startsWith("mod_sight_front")
-            ) {
-                expectedRenderedSlots.add(String(slot.id));
+            const id = String(node.dataset.slotId);
+
+            if (!domSlots.has(id)) {
+                domSlots.set(id, []);
             }
-        }
 
-        // -----------------------
-        // Compare
-        // -----------------------
+            domSlots.get(id).push(node);
+        });
+
         const missing = [];
+        const duplicates = [];
 
-        for (const id of expectedRenderedSlots) {
-            if (!domSlotIds.has(id)) {
-                const slot = baseSlots.find(s => String(s.id) === id);
-                missing.push({
-                    slot_name: slot?.slot_name,
-                    name_id: slot?.name_id
+        for (const id of expectedSlots) {
+
+            if (!domSlots.has(id)) {
+
+                missing.push(id);
+            }
+        }
+
+        for (const [id, nodes] of domSlots) {
+
+            if (nodes.length > 1) {
+
+                const slotName =
+                    slotNameLookup.get(id) ||
+                    "UNKNOWN";
+
+                duplicates.push({
+                    slot_name: slotName,
+                    slot_id: id,
+                    count: nodes.length
                 });
             }
         }
 
-        if (missing.length) {
-            console.group(`Issues in ${gun.name}`);
-            console.log("Missing:", missing);
+        if (missing.length || duplicates.length) {
+
+            console.group(`ISSUES: ${gun.name}`);
+
+            if (missing.length) {
+                console.warn("Missing DOM slots:", missing);
+            }
+
+            if (duplicates.length) {
+                console.warn("Duplicate DOM slots:");
+                console.table(duplicates);
+            }
+
             console.groupEnd();
 
             globalIssues.push({
                 gun: gun.name,
-                missing
+                missing: missing.length,
+                duplicates: duplicates.length
             });
         }
+
+        else {
+
+            console.log("✓ OK:", gun.name);
+        }
     }
+
+    console.log("=================================");
+    console.log("MEGA GRAPH SCAN COMPLETE");
+    console.log("=================================");
 
     if (globalIssues.length === 0) {
-        console.log("All guns verified. DOM render is consistent.");
+
+        console.log("ALL GUNS VERIFIED — NO ISSUES");
+
     } else {
-        console.warn("Render inconsistencies detected:");
+
+        console.warn("ISSUES DETECTED:");
         console.table(globalIssues);
     }
-
-    console.log("=== DOM RENDER SCAN COMPLETE ===");
-}
-
-// CHILD Debugger
-async function debugUnrenderedSlots() {
-
-    console.log("=== FULL GRAPH SLOT DEBUG START ===");
-
-    const domNodes = document.querySelectorAll(".graph-slot");
-    const domSlotIds = new Set(
-        Array.from(domNodes).map(n => String(n.dataset.slotId))
-    );
-
-    const missing = [];
-
-    async function scanItem(item) {
-
-        let slots;
-
-        if (slotCache[item.id]) {
-            slots = slotCache[item.id];
-        } else {
-            const res = await fetch(`${API_BASE}/items/${item.id}/slots`);
-            slots = await res.json();
-            slotCache[item.id] = slots;
-        }
-
-        for (const slot of slots) {
-
-            const id = String(slot.id);
-
-            if (!domSlotIds.has(id)) {
-
-                missing.push({
-                    parent_item: item.name,
-                    slot_name: slot.slot_name,
-                    name_id: slot.name_id
-                });
-            }
-
-            const installed = buildTree.children?.[slot.id];
-
-            if (installed) {
-                await scanItem(installed.item);
-            }
-        }
-    }
-
-    await scanItem(buildTree.item);
-
-    if (missing.length === 0) {
-        console.log("All graph slots rendered.");
-    } else {
-        console.warn("UNRENDERED SLOTS DETECTED:");
-        console.table(missing);
-    }
-
-    console.log("=== FULL GRAPH SLOT DEBUG END ===");
 }
